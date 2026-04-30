@@ -1,4 +1,114 @@
-VALIDATION DATA PROCESSING
+% =====================================================================
+% =====================================================================
+%           PROPELLER TONAL NOISE SOLVER (STEADY & UNSTEADY)
+% =====================================================================
+% =====================================================================
+clear; clc; close all;
+% =====================================================================
+%                   MODE SELECTION AND USER INPUT
+% =====================================================================
+
+fprintf('--- Propeller Tonal Noise Solver ---\n');
+run_type = input('Enter 1 for ANALYSIS or 2 for VALIDATION: ');
+loading_choice = input('Enter 1 for STEADY LOADING or 2 for UNSTEADY LOADING: ');
+Nb = 2;                     % Number of blades
+RPM = 6000;                 % Revolutions per minute
+order_unsteady = 5;         % Order of azimuthal variation
+amp_unsteady = 0.04;        % Amplitude of the variation
+if loading_choice == 1
+    fprintf('Selected mode: STEADY LOADING\n');
+    k_vec = 0;              % Only steady component
+else
+    fprintf('Selected mode: UNSTEADY LOADING\n');
+    % Loading varies with order k_var. Considering harmonics -k, 0, k
+    k_vec = [-order_unsteady, 0, order_unsteady]; 
+end
+
+% =====================================================================
+%                   ATMOSPHERIC AND GEOMETRIC DATA
+% =====================================================================
+
+c_inf = 340;                % Speed of sound [m/s] 
+rho_inf = 1.225;            % Air density [kg/m^3]
+p_ref = 2e-5;               % Reference pressure [Pa]
+Omega = RPM * 2 * pi / 60;  % Angular frequency [rad/s]
+% Data import
+data = table2array(readtable('save_tonal.csv')); % dt, dQ, r, c/R
+% Insert radial vector R and chord/thickness distributions from BEMT
+R = data(4:end,3);          % R_BEMT
+c_R = data(4:end,4)/1000;   % chord_BEMT
+h_R = 0.20 * c_R.*R/1000;   % Average thickness
+Nr = length(R(:,1));
+% Observer position
+r_0 = 1.0;                  
+theta_0 = pi/2;             
+psi = 0;                    
+% =====================================================================
+%               AERODYNAMIC LOADS (BEMT INTEGRATION)
+% =====================================================================
+% dL_k0 and dD_k0 must be the STEADY loads extracted from BEMT
+dL_k0 = data(4:end,1);     % Lift_BEMT [N/m], which is dT
+dD_k0 = data(4:end,2)./R;  % Drag_BEMT [N/m], which is dQ/r
+% =====================================================================
+%                     ACOUSTIC SPECTRUM CALCULATION
+% =====================================================================
+N_harmonics = input('Enter the number of harmonics to calculate: ');
+if loading_choice == 1
+    n_vec = Nb * (1:N_harmonics); 
+else
+    n_vec = 1:(Nb * N_harmonics); 
+end
+cn = zeros(size(n_vec));
+SPL = zeros(size(n_vec));
+for idx = 1:length(n_vec)
+    n = n_vec(idx);
+    arg_Bessel = (n * Omega .* R * sin(theta_0)) / c_inf;
+    
+    % THICKNESS TERM (Monopole)
+    Bessel_n = besselj(n, arg_Bessel);
+    S_n = 1i * n * Omega * rho_inf * c_inf .* h_R .* c_R .* Bessel_n * exp(1i * n * psi);
+    
+    Phase_sum_thickness = sum(exp(-1i * n * (1:Nb) * 2 * pi / Nb));
+    Integral_Sn = trapz(R, S_n) * Phase_sum_thickness;
+    
+    % LOADING TERM (Dipole)
+    Integral_Qn = 0;
+    
+    for k = k_vec
+        % Load assignment based on harmonic k
+        if k == 0
+            dL = dL_k0; 
+            dD = dD_k0;
+        else
+            % Unsteady amplitude is split between positive and negative harmonics
+            dL = dL_k0 * (amp_unsteady / 2); 
+            dD = dD_k0 * (amp_unsteady / 2); 
+        end
+        
+        % Bessel functions for the dipole (depending on n-k)
+        J_nmk = besselj(n - k, arg_Bessel);
+        J_nmk_minus1 = besselj(n - k - 1, arg_Bessel);
+        J_nmk_plus1 = besselj(n - k + 1, arg_Bessel);
+        
+        term_L = dL * cos(theta_0) .* J_nmk * exp(1i * (n - k) * psi);
+        term_D = dD * (sin(theta_0) / (2i)) .* (J_nmk_minus1 .* exp(1i*(n-k-1)*psi) - J_nmk_plus1 .* exp(1i*(n-k+1)*psi));
+        
+        % Column vector for integration
+        Q_n_k = term_L + term_D;
+        
+        Phase_sum_k = sum(exp(-1i * (n - k) * (1:Nb) * 2 * pi / Nb));
+        
+        Integral_Qn = Integral_Qn + trapz(R, Q_n_k) * Phase_sum_k;
+    end
+    
+    % Acoustic pressure cn
+    A_const = (1i * n * Omega * exp(1i * n * Omega * r_0 / c_inf)) / (4 * pi * r_0 * c_inf);
+    cn(idx) = A_const * (Integral_Sn + Integral_Qn);
+    SPL(idx) = 20 * log10(abs(cn(idx)) / (sqrt(2) * p_ref)); 
+end
+
+% =====================================================================
+%                   VALIDATION DATA PROCESSING
 % =====================================================================
 
 if run_type == 2
@@ -34,11 +144,11 @@ else
 end
 figure
 % Analytical model plot
-plot(f_BPF, SPL, '-o','MarkerFaceColor','w', 'DisplayName', 'Analytical Model');
+plot(f_BPF, SPL, '-o','MarkerFaceColor','w', 'DisplayName', 'Modello Analitico');
 if run_type == 2
     hold on;
     % Validation data plot
-    plot(f_valid, SPL_valid, '--', 'DisplayName', 'Validation');
+    plot(f_valid, SPL_valid, '--', 'DisplayName', 'Risultati Sperimentali');
 end
 xlabel('Frequency [Hz]'); 
 ylabel('SPL [dB]');
